@@ -74,27 +74,6 @@ class SshReader(object):
         buf = self.read_string()
         return int.from_bytes(buf, byteorder="big", signed=False)
 
-    def read_struct(self, types):
-        data = []
-        for tchar in types:
-            if tchar == "B":
-                data.append(self.read_byte())
-            elif tchar == "L":
-                data.append(self.read_uint32())
-            elif tchar == "M":
-                data.append(self.read_mpint())
-            elif tchar == "b":
-                data.append(self.read_string())
-            elif tchar == "s":
-                data.append(self.read_string().decode())
-            else:
-                raise ValueError("unknown type %r" % (tchar))
-        return data
-
-    def read_message(self, types):
-        pkt = self.read_string_pkt()
-        return pkt.read_struct(types)
-
 class SshWriter(object):
     def __init__(self, output_fh):
         if hasattr(output_fh, "makefile"):
@@ -205,7 +184,8 @@ class SshAgentConnection(object):
         nkeys = pkt.read_uint32()
         keys = []
         for i in range(nkeys):
-            (keyblob, comment) = pkt.read_struct("bs")
+            keyblob = pkt.read_string()
+            comment = pkt.read_string().decode("utf-8")
             key = SshAgentKey(self, keyblob, comment)
             keys.append(key)
         return keys
