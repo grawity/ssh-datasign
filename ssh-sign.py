@@ -2,12 +2,12 @@
 # v0.1
 # (c) 2018 Mantas Mikulėnas <grawity@gmail.com>
 # Released under the MIT License (https://spdx.org/licenses/MIT)
-import base64
 import binascii
 import enum
 import hashlib
 import io
 from nullroute.io import SshBinaryReader, SshBinaryWriter
+from nullroute.misc import chunk
 import os
 from pprint import pprint
 import socket
@@ -258,8 +258,7 @@ def ssh_parse_signature(buf, algoonly=False):
 
 def ssh_format_sshsig(pubkey, namespace, sig_algo, signature):
     # PROTOCOL.sshsig
-    buf = io.BytesIO()
-    pkt = SshBinaryWriter(buf)
+    pkt = SshBinaryWriter(io.BytesIO())
     pkt.write(b"SSHSIG")
     pkt.write_uint32(0x01)
     pkt.write_string(pubkey)
@@ -267,10 +266,10 @@ def ssh_format_sshsig(pubkey, namespace, sig_algo, signature):
     pkt.write_string(b"")
     pkt.write_string(sig_algo.encode())
     pkt.write_string(signature)
-    return buf.getvalue()
+    return pkt.fh.getvalue()
 
 def ssh_parse_sshsig(buf):
-    pkg = SshReader.from_bytes(buf)
+    pkt = SshBinaryReader(io.BytesIO(buf))
     magic = pkt.read(6)
     if magic != b"SSHSIG":
         raise ValueError("magic preamble not found")
@@ -287,9 +286,27 @@ def ssh_parse_sshsig(buf):
     return data
 
 def ssh_enarmor_sshsig(buf):
-    # TODO: wrap to 76
-    buf = base64.encodebytes(buf).decode()
-    return "-----BEGIN SSH SIGNATURE-----\n" + buf + "-----END SSH SIGNATURE-----\n"
+    buf = b64_encode(buf)
+    buf = "\n".join([
+            "-----BEGIN SSH SIGNATURE-----",
+            *chunk(buf, 76),
+            "-----END SSH SIGNATURE-----",
+          ])
+    return buf + "\n"
+
+def ssh_dearmor_sshsig(buf):
+    acc = ""
+    match = False
+    # TODO: stricter format check
+    for line in buf.splitlines():
+        if line == "-----BEGIN SSH SIGNATURE-----":
+            match = True
+        elif line == "-----END SSH SIGNATURE-----":
+            break
+        elif line and match:
+            acc += line
+    print(acc)
+    return binascii.a2b_base64(acc)
 
 sigalgo_to_keyalgo = {
     "rsa-sha2-256":     "ssh-rsa",
@@ -375,4 +392,8 @@ if cmd == "sign":
         #raise ValueError("signatures of %r not supported" % sigdata["algo"])
 
 elif cmd == "verify":
-    pass
+    buf = sys.stdin.read()
+    buf = ssh_dearmor_sshsig(buf)
+    print(buf)
+    buf = ssh_parse_sshsig(buf)
+    pprint(buf)
