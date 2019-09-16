@@ -268,6 +268,10 @@ def ssh_parse_publickey(buf, algoonly=False):
     elif algo in {"ssh-ed25519", "ssh-ed448"}:
         # https://tools.ietf.org/html/draft-ietf-curdle-ssh-ed25519-ed448-00#section-4
         data["key"] = pkt.read_string()
+    elif algo.startswith("ecdsa-sha2-"):
+        # https://tools.ietf.org/html/rfc5656#section-3.1
+        data["curve"] = pkt.read_string()
+        data["Q"] = pkt.read_string()
     else:
         raise UnsupportedKeyType(algo)
     return data
@@ -288,6 +292,12 @@ def ssh_parse_signature(buf, algoonly=False):
     elif algo in {"ssh-ed25519", "ssh-ed448"}:
         # https://tools.ietf.org/html/draft-ietf-curdle-ssh-ed25519-ed448-00#section-4
         data["sig"] = pkt.read_string()
+    elif algo.startswith("ecdsa-sha2-"):
+        # https://tools.ietf.org/html/rfc5656#section-3.1.2
+        #data["sig"] = pkt.read_string()
+        sigpkt = pkt.read_string_pkt()
+        data["r"] = sigpkt.read_mpint()
+        data["s"] = sigpkt.read_mpint()
     else:
         raise UnsupportedSignatureType(algo)
     return data
@@ -383,6 +393,33 @@ def cry_verify_signature(buf, pubkey_data, signature_data):
             pk.verify(signature_data["sig"], buf)
             return True
         except ed25519.BadSignatureError:
+            return False
+    elif key_algo.startswith("ecdsa-sha2-"):
+        import ecdsa
+        curves = {
+            "ecdsa-sha2-nistp256": ecdsa.NIST256p,
+            "ecdsa-sha2-nistp384": ecdsa.NIST384p,
+            "ecdsa-sha2-nistp521": ecdsa.NIST521p,
+        }
+        digests = {
+            # https://tools.ietf.org/html/rfc5656#section-6.2.1
+            "ecdsa-sha2-nistp256": hashlib.sha256,
+            "ecdsa-sha2-nistp384": hashlib.sha384,
+            "ecdsa-sha2-nistp521": hashlib.sha512,
+        }
+        if pubkey_data["Q"][0] == 0x04:
+            # complete point
+            pk = ecdsa.VerifyingKey.from_string(pubkey_data["Q"][1:],
+                                                curve=curves[key_algo],
+                                                hashfunc=digests[key_algo])
+        else:
+            # probably compressed point?
+            raise UnsupportedKeyType("%s{B0=%02x}" % (key_algo, pubkey_data["Q"][0]))
+        try:
+            pk.verify(signature_data, buf,
+                      sigdecode=lambda sig, order: (sig["r"], sig["s"]))
+            return True
+        except ecdsa.BadSignatureError:
             return False
     else:
         raise UnsupportedKeyType(key_algo)
