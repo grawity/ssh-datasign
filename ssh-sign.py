@@ -319,15 +319,6 @@ sigalgo_to_digest = {
     "rsa-sha2-512":     "sha512",
 }
 
-def cry_import_pubkey(pubkey_data):
-    key_algo = pubkey_data["algo"]
-    if key_algo == "ssh-rsa":
-        from Crypto.PublicKey import RSA
-        return RSA.construct((pubkey_data["n"],
-                              pubkey_data["e"]))
-    else:
-        raise UnsupportedKeyType(key_algo)
-
 def cry_verify_signature(buf, pubkey_data, signature_data):
     key_algo = pubkey_data["algo"]
     sig_algo = signature_data["algo"]
@@ -335,6 +326,7 @@ def cry_verify_signature(buf, pubkey_data, signature_data):
         raise UnsupportedKeyType(key_algo)
     if key_algo == "ssh-rsa":
         from Crypto.Hash import SHA, SHA256, SHA512
+        from Crypto.PublicKey import RSA
         from Crypto.Signature import PKCS1_v1_5
         if sig_algo == "ssh-rsa":
             dg = SHA.new(buf)
@@ -344,7 +336,8 @@ def cry_verify_signature(buf, pubkey_data, signature_data):
             dg = SHA512.new(buf)
         else:
             raise UnsupportedSignatureType(sig_algo)
-        pk = cry_import_pubkey(pubkey_data)
+        pk = RSA.construct((pubkey_data["n"],
+                            pubkey_data["e"]))
         sg = PKCS1_v1_5.new(pk)
         return sg.verify(dg, signature_data["s"])
     elif key_algo == "ssh-ed25519":
