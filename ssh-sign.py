@@ -180,6 +180,13 @@ class SshAgentKey(object):
         keydata = ssh_parse_publickey(self.keyblob, algoonly=True)
         self.keyalgo = keydata["algo"]
 
+    def publickey_base64(self, with_type=False):
+        buf = binascii.b2a_base64(self.keyblob, newline=False).decode()
+        if with_type:
+            return self.keyalgo + " " + buf
+        else:
+            return buf
+
     def fprint_md5_hex(self):
         dgst = hashlib.md5(self.keyblob).digest()
         dgst = ":".join(["%02x" % x for x in dgst])
@@ -298,7 +305,7 @@ def ssh_format_sshsig(pubkey, namespace, sig_algo, signature):
     return pkt.output_fh.getvalue()
 
 def ssh_parse_sshsig(buf):
-    pkt = SshBinaryReader(io.BytesIO(buf))
+    pkt = SshReader.from_bytes(buf)
     magic = pkt.read(6)
     if magic != b"SSHSIG":
         raise ValueError("magic preamble not found")
@@ -388,6 +395,7 @@ if cmd == "sign":
                      help="Key fingerprint in 'MD5:<hex>' or 'SHA256:<b64>' format")
     _ap.add_argument("--input-hexdata")
     _ap.add_argument("--input-string")
+    _ap.add_argument("--test-verify", action="store_true")
     args = _ap.parse_args(rest)
 
     if not args.fingerprint:
@@ -419,18 +427,66 @@ if cmd == "sign":
     tmp = ssh_enarmor_sshsig(tmp)
     print(tmp)
 
-    print("verify:", cry_verify_signature(data, keydata, sigdata))
+    if args.test_verify:
+        print("verify:", cry_verify_signature(data, keydata, sigdata))
 
-    if sigdata["algo"] in {"ssh-rsa", "rsa-sha2-256", "rsa-sha2-512"}:
-        # compatible with OpenSSL; RSASSA-PKCS1-v1_5 is used
-        print("Raw signature:", b64_encode(sigdata["s"]))
-    else:
-        pass
-        #raise ValueError("signatures of %r not supported" % sigdata["algo"])
+        if sigdata["algo"] in {"ssh-rsa", "rsa-sha2-256", "rsa-sha2-512"}:
+            # compatible with OpenSSL; RSASSA-PKCS1-v1_5 is used
+            print("Raw signature:", b64_encode(sigdata["s"]))
+        else:
+            pass
+            #raise ValueError("signatures of %r not supported" % sigdata["algo"])
 
 elif cmd == "verify":
-    buf = sys.stdin.read()
-    buf = ssh_dearmor_sshsig(buf)
-    print(buf)
-    buf = ssh_parse_sshsig(buf)
-    pprint(buf)
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--fingerprint",
+                     help="Key fingerprint in 'MD5:<hex>' or 'SHA256:<b64>' format")
+    _ap.add_argument("--publickey")
+    _ap.add_argument("--input-hexdata")
+    _ap.add_argument("--input-string")
+    _ap.add_argument("--signature-string")
+    args = _ap.parse_args(rest)
+
+    if args.input_hexdata:
+        data = binascii.unhexlify(args.input_hexdata)
+    elif args.input_string:
+        data = args.input_string.encode()
+    else:
+        Core.die("input data not specified")
+
+    if args.signature_string:
+        sshsigbuf = args.signature_string
+    else:
+        sshsigbuf = sys.stdin.read()
+
+    sshsigbuf = ssh_dearmor_sshsig(sshsigbuf)
+    sshsigdata = ssh_parse_sshsig(sshsigbuf)
+    Core.trace("parsed sshsig wrapper: %r", sshsigdata)
+
+    keyblob = sshsigdata["publickey"]
+    sigblob = sshsigdata["signature"]
+
+    keydata = ssh_parse_publickey(keyblob)
+    sigdata = ssh_parse_signature(sigblob)
+
+    if args.publickey:
+        agentkey = SshAgentKey(None, keyblob)
+        if args.publickey == agentkey.publickey_base64():
+            Core.debug("enveloped publickey matches provided")
+        elif args.publickey == agentkey.publickey_base64(with_type=True):
+            Core.debug("enveloped publickey matches provided")
+        else:
+            Core.die("enveloped publickey does not match provided")
+    if args.fingerprint:
+        agentkey = SshAgentKey(None, keyblob)
+        if args.fingerprint == agentkey.fprint_md5_hex():
+            Core.debug("enveloped publickey MD5 fingerprint matches provided one")
+        elif args.fingerprint == agentkey.fprint_sha256_base64():
+            Core.debug("enveloped publickey SHA256 fingerprint matches provided one")
+        else:
+            Core.die("enveloped publickey fingerprint does not match provided")
+
+    Core.trace("parsed publickey blob: %r", keydata)
+    Core.trace("parsed signature blob: %r", sigdata)
+
+    print("verify:", cry_verify_signature(data, keydata, sigdata))
