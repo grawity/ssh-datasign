@@ -43,9 +43,9 @@ class SshReader(object):
             input_fh = input_fh.makefile("rb")
         self.input_fh = input_fh
 
-    def read(self, *args):
-        buf = self.input_fh.read(*args)
-        if not buf:
+    def read(self, length=None):
+        buf = self.input_fh.read(length)
+        if (not buf) and (length != None) and (length != 0):
             raise SshEndOfStream()
         return buf
 
