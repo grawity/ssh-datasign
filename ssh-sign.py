@@ -2,21 +2,24 @@
 # v0.1
 # (c) 2018 Mantas Mikulėnas <grawity@gmail.com>
 # Released under the MIT License (https://spdx.org/licenses/MIT)
+import argparse
 import binascii
 import enum
 import hashlib
 import io
-from nullroute.io import SshBinaryReader, SshBinaryWriter
-from nullroute.misc import chunk
+from nullroute.core import Core
 import os
 from pprint import pprint
 import socket
 import struct
 import sys
-from types import SimpleNamespace
 
 def b64_encode(buf):
     return binascii.b2a_base64(buf, newline=False).decode()
+
+def chunk(vec, size):
+    for i in range(0, len(vec), size):
+        yield vec[i:i+size]
 
 class SshEndOfStream(Exception):
     pass
@@ -86,41 +89,65 @@ class SshWriter(object):
             ret = self.output_fh.flush()
         return ret
 
-    def write_struct(self, types, *data, length_prefix=False):
+    def flush(self):
+        return self.output_fh.flush()
+
+    def write_byte(self, val):
+        buf = struct.pack("!B", val)
+        return self.write(buf)
+
+    def write_uint32(self, val):
+        buf = struct.pack("!L", val)
+        return self.write(buf)
+
+    def write_bool(self, val):
+        buf = struct.pack("!?", val)
+        return self.write(buf)
+
+    def write_string(self, val):
+        buf = struct.pack("!L", len(val)) + val
+        return self.write(buf)
+
+    def write_mpint(self, val):
+        length = val.bit_length()
+        if length & 0xFF:
+            length |= 0xFF
+            length += 1
+        length >>= 8
+        Core.debug("mpint %r length %r", val, length)
+        buf = val.to_bytes(length, "big", signed=False)
+        return self.write_string(buf)
+
+    def write_struct(self, items, *, length_prefix=False):
         fmt = "!L" if length_prefix else "!"
         packed = [0] if length_prefix else []
-        for i, _ in enumerate(types):
-            if types[i] == "B":
+        for t, v in items:
+            if t == "byte":
                 fmt += "B"
-                packed.append(int(data[i]))
-            elif types[i] == "L":
+                packed.append(int(v))
+            elif t == "uint32":
                 fmt += "L"
-                packed.append(int(data[i]))
-            elif types[i] == "M":
-                nd, nm = divmod(data[i].bit_length(), 8)
-                buf = data[i].to_bytes(nd + int(nm > 0), byteorder="big")
+                packed.append(int(v))
+            elif t == "mpint":
+                nd, nm = divmod(v.bit_length(), 8)
+                buf = v.to_bytes(nd + int(nm > 0), byteorder="big")
                 fmt += "L%ds" % len(buf)
                 packed.append(len(buf))
-                packed.append(bytes(buf))
-            elif types[i] == "b":
-                buf = data[i]
+                packed.append(buf)
+            elif t == "string":
+                buf = bytes(v)
                 fmt += "L%ds" % len(buf)
                 packed.append(len(buf))
-                packed.append(bytes(buf))
-            elif types[i] == "s":
-                buf = data[i].encode()
-                fmt += "L%ds" % len(buf)
-                packed.append(len(buf))
-                packed.append(bytes(buf))
+                packed.append(buf)
             else:
-                raise ValueError("unknown type %r of %r" % (types[i], data[i]))
+                raise ValueError("unknown type %r of %r" % (t, v))
         if length_prefix:
             packed[0] = struct.calcsize(fmt) - 4
         buf = struct.pack(fmt, *packed)
         self.write(buf, flush=True)
 
-    def write_message(self, types, *data):
-        return self.write_struct(types, *data, length_prefix=True)
+    def write_message(self, items):
+        return self.write_struct(items, length_prefix=True)
 
 class SshStream(SshReader, SshWriter):
     def __init__(self, input_fh, output_fh=None):
@@ -150,7 +177,7 @@ class SshAgentKey(object):
         self.keyblob = keyblob
         self.comment = comment
 
-        keydata = ssh_parse_pubkey(self.keyblob, algoonly=True)
+        keydata = ssh_parse_publickey(self.keyblob, algoonly=True)
         self.keyalgo = keydata["algo"]
 
     def fprint_md5_hex(self):
@@ -176,7 +203,7 @@ class SshAgentConnection(object):
         self.stream = SshStream(self.sock)
 
     def list_keys(self):
-        self.stream.write_message("B", SshAgentCommand.REQUEST_IDENTITIES)
+        self.stream.write_message([("byte", SshAgentCommand.REQUEST_IDENTITIES)])
         pkt = self.stream.read_string_pkt()
         result = SshAgentReply(pkt.read_byte())
         if result != SshAgentReply.IDENTITIES_ANSWER:
@@ -198,8 +225,10 @@ class SshAgentConnection(object):
         raise KeyError("no key with fingerprint %r found in agent" % fpr)
 
     def sign_data(self, buf, keyblob, flags=0):
-        self.stream.write_message("BbbL", SshAgentCommand.SIGN_REQUEST,
-                                  keyblob, buf, flags)
+        self.stream.write_message([("byte", SshAgentCommand.SIGN_REQUEST),
+                                   ("string", keyblob),
+                                   ("string", buf),
+                                   ("uint32", flags)])
         pkt = self.stream.read_string_pkt()
         result = SshAgentReply(pkt.read_byte())
         if result != SshAgentReply.SIGN_RESPONSE:
@@ -213,7 +242,7 @@ class SshAgentConnection(object):
 # https://tools.ietf.org/html/draft-irtf-cfrg-eddsa-05
 # https://tools.ietf.org/html/draft-ietf-curdle-ssh-ed25519-00
 
-def ssh_parse_pubkey(buf, algoonly=False):
+def ssh_parse_publickey(buf, algoonly=False):
     pkt = SshReader.from_bytes(buf)
     algo = pkt.read_string().decode()
     data = {"algo": algo}
@@ -258,7 +287,7 @@ def ssh_parse_signature(buf, algoonly=False):
 
 def ssh_format_sshsig(pubkey, namespace, sig_algo, signature):
     # PROTOCOL.sshsig
-    pkt = SshBinaryWriter(io.BytesIO())
+    pkt = SshWriter(io.BytesIO())
     pkt.write(b"SSHSIG")
     pkt.write_uint32(0x01)
     pkt.write_string(pubkey)
@@ -266,7 +295,7 @@ def ssh_format_sshsig(pubkey, namespace, sig_algo, signature):
     pkt.write_string(b"")
     pkt.write_string(sig_algo.encode())
     pkt.write_string(signature)
-    return pkt.fh.getvalue()
+    return pkt.output_fh.getvalue()
 
 def ssh_parse_sshsig(buf):
     pkt = SshBinaryReader(io.BytesIO(buf))
@@ -354,22 +383,37 @@ def cry_verify_signature(buf, pubkey_data, signature_data):
 cmd, *rest = sys.argv[1:]
 
 if cmd == "sign":
-    fprint, data = rest
-    data = data.encode()
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--fingerprint",
+                     help="Key fingerprint in 'MD5:<hex>' or 'SHA256:<b64>' format")
+    _ap.add_argument("--input-hexdata")
+    _ap.add_argument("--input-string")
+    args = _ap.parse_args(rest)
+
+    if not args.fingerprint:
+        Core.die("signing key (--fingerprint) not specified")
+
+    if args.input_hexdata:
+        data = binascii.unhexlify(args.input_hexdata)
+    elif args.input_string:
+        data = args.input_string.encode()
+    else:
+        Core.die("input data not specified")
 
     agent = SshAgentConnection()
-    agentkey = agent.get_key_by_fprint(fprint)
+    agentkey = agent.get_key_by_fprint(args.fingerprint)
 
     flags = 0
     if agentkey.keyalgo == "ssh-rsa":
     	flags |= SignRequestFlags.RSA_SHA2_256
+
     sigblob = agentkey.sign_data(data, flags)
 
-    keydata = ssh_parse_pubkey(agentkey.keyblob)
+    keydata = ssh_parse_publickey(agentkey.keyblob)
     sigdata = ssh_parse_signature(sigblob)
     print("Signed using %s" % sigdata["algo"])
-    pprint(keydata)
-    pprint(sigdata)
+    Core.trace("parsed publickey blob: %r", keydata)
+    Core.trace("parsed signature blob: %r", sigdata)
 
     tmp = ssh_format_sshsig(agentkey.keyblob, b"", sigdata["algo"], sigblob)
     tmp = ssh_enarmor_sshsig(tmp)
