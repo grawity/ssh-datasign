@@ -575,6 +575,9 @@ elif cmd == "verify":
             Core.debug("enveloped publickey SHA256 fingerprint matches provided one")
         else:
             Core.die("enveloped publickey fingerprint does not match provided")
+    if args.namespace:
+        if args.namespace.encode() != sshsigdata["namespace"]:
+            Core.die("enveloped namespace does not match provided")
 
     Core.trace("parsed publickey blob: %r", keydata)
     Core.trace("parsed signature blob: %r", sigdata)
