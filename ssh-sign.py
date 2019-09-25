@@ -30,6 +30,9 @@ class UnsupportedKeyType(Exception):
 class UnsupportedSignatureType(Exception):
     pass
 
+class UnsupportedHashType(Exception):
+    pass
+
 class UnsupportedVersion(Exception):
     pass
 
@@ -302,6 +305,27 @@ def ssh_parse_signature(buf, algoonly=False):
         raise UnsupportedSignatureType(algo)
     return data
 
+def ssh_format_sshsigdata(namespace, hash_algo, hash):
+    pkt = SshWriter(io.BytesIO())
+    pkt.write(b"SSHSIG")
+    pkt.write_string(namespace)
+    pkt.write_string(b"")
+    pkt.write_string(hash_algo.encode())
+    pkt.write(hash)
+    return pkt.output_fh.getvalue()
+
+def ssh_parse_sshsigdata(buf):
+    pkt = SshReader.from_bytes(buf)
+    magic = pkt.read(6)
+    if magic != b"SSHSIG":
+        raise ValueError("magic preamble not found")
+    data = {}
+    data["namespace"] = pkt.read_string()
+    data["reserved"] = pkt.read_string()
+    data["hash_algo"] = pkt.read_string()
+    data["hash"] = pkt.read()
+    return data
+
 def ssh_format_sshsig(pubkey, namespace, sig_algo, signature):
     # PROTOCOL.sshsig
     pkt = SshWriter(io.BytesIO())
@@ -351,7 +375,6 @@ def ssh_dearmor_sshsig(buf):
             break
         elif line and match:
             acc += line
-    print(acc)
     return binascii.a2b_base64(acc)
 
 sigalgo_to_keyalgo = {
@@ -364,6 +387,12 @@ sigalgo_to_digest = {
     "rsa-sha2-256":     "sha256",
     "rsa-sha2-512":     "sha512",
 }
+
+def hash_data(hash_algo, data):
+    if hash_algo in {"sha1", "sha256", "sha512"}:
+        return hashlib.new(hash_algo, data).digest()
+    else:
+        raise UnsupportedHashType(hash_algo)
 
 def cry_verify_signature(buf, pubkey_data, signature_data):
     key_algo = pubkey_data["algo"]
@@ -433,6 +462,7 @@ if cmd == "sign":
     _ap.add_argument("--input-hexdata")
     _ap.add_argument("--input-string")
     _ap.add_argument("--test-verify", action="store_true")
+    _ap.add_argument("--namespace")
     args = _ap.parse_args(rest)
 
     if not args.fingerprint:
@@ -445,6 +475,17 @@ if cmd == "sign":
     else:
         Core.die("input data not specified")
 
+    namespace = (args.namespace or "").encode()
+
+    # Format the inner packet that will be signed.
+
+    hash_algo = "sha512"
+    sshsigblob = ssh_format_sshsigdata(namespace,
+                                       hash_algo,
+                                       hash_data(hash_algo, data))
+
+    # Sign the packet.
+
     agent = SshAgentConnection()
     agentkey = agent.get_key_by_fprint(args.fingerprint)
 
@@ -452,15 +493,24 @@ if cmd == "sign":
     if agentkey.keyalgo == "ssh-rsa":
     	flags |= SignRequestFlags.RSA_SHA2_256
 
-    sigblob = agentkey.sign_data(data, flags)
+    sigblob = agentkey.sign_data(sshsigblob, flags)
+
+    Core.trace("raw signature blob: %r", sigblob)
+
+    # Show information.
 
     keydata = ssh_parse_publickey(agentkey.keyblob)
     sigdata = ssh_parse_signature(sigblob)
-    print("Signed using %s" % sigdata["algo"])
     Core.trace("parsed publickey blob: %r", keydata)
     Core.trace("parsed signature blob: %r", sigdata)
 
-    tmp = ssh_format_sshsig(agentkey.keyblob, b"", sigdata["algo"], sigblob)
+    sig_algo = sigdata["algo"]
+    sig_algo = hash_algo
+    Core.info("Signed using %s" % sig_algo)
+
+    tmp = ssh_format_sshsig(agentkey.keyblob, namespace, sig_algo, sigblob)
+    Core.trace("formatted sshsig packet: %r", tmp)
+    Core.trace("=> %r", ssh_parse_sshsig(tmp))
     tmp = ssh_enarmor_sshsig(tmp)
     print(tmp)
 
@@ -482,6 +532,7 @@ elif cmd == "verify":
     _ap.add_argument("--input-hexdata")
     _ap.add_argument("--input-string")
     _ap.add_argument("--signature-string")
+    _ap.add_argument("--namespace")
     args = _ap.parse_args(rest)
 
     if args.input_hexdata:
@@ -495,6 +546,8 @@ elif cmd == "verify":
         sshsigbuf = args.signature_string
     else:
         sshsigbuf = sys.stdin.read()
+
+    namespace = (args.namespace or "").encode()
 
     sshsigbuf = ssh_dearmor_sshsig(sshsigbuf)
     sshsigdata = ssh_parse_sshsig(sshsigbuf)
@@ -526,4 +579,22 @@ elif cmd == "verify":
     Core.trace("parsed publickey blob: %r", keydata)
     Core.trace("parsed signature blob: %r", sigdata)
 
-    print("verify:", cry_verify_signature(data, keydata, sigdata))
+    # Format the inner packet that will be signed.
+
+    hash_algo = sshsigdata["sig_algo"].decode()
+    sshsigblob = ssh_format_sshsigdata(namespace,
+                                       hash_algo,
+                                       hash_data(hash_algo, data))
+
+    Core.trace("formatted inner packet: %r", sshsigblob)
+    Core.trace("=> %r", ssh_parse_sshsigdata(sshsigblob))
+
+    sig_algo = "sha512"
+    Core.trace("=> %s(inner): %r", sig_algo, hash_data(sig_algo, sshsigblob))
+
+    print("verify:", cry_verify_signature(sshsigblob, keydata, sigdata))
+
+else:
+    buf = open("/tmp/pkt", "rb").read()
+    sbuf = ssh_parse_sshsigdata(buf)
+    pprint(sbuf)
