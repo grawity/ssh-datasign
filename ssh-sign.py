@@ -386,6 +386,8 @@ sigalgo_to_digest = {
     "ssh-rsa":          "sha1",
     "rsa-sha2-256":     "sha256",
     "rsa-sha2-512":     "sha512",
+    "ssh-ed25519":      "sha512",
+    "ssh-ed448":        "sha512",
 }
 
 def hash_data(hash_algo, data):
@@ -504,11 +506,10 @@ if cmd == "sign":
     Core.trace("parsed publickey blob: %r", keydata)
     Core.trace("parsed signature blob: %r", sigdata)
 
-    sig_algo = sigdata["algo"]
-    sig_algo = hash_algo
+    hash_algo = sigalgo_to_digest[sigdata["algo"]]
     Core.info("Signed using %s" % sig_algo)
 
-    tmp = ssh_format_sshsig(agentkey.keyblob, namespace, sig_algo, sigblob)
+    tmp = ssh_format_sshsig(agentkey.keyblob, namespace, hash_algo, sigblob)
     Core.trace("formatted sshsig packet: %r", tmp)
     Core.trace("=> %r", ssh_parse_sshsig(tmp))
     tmp = ssh_enarmor_sshsig(tmp)
@@ -516,7 +517,6 @@ if cmd == "sign":
 
     if args.test_verify:
         print("verify:", cry_verify_signature(data, keydata, sigdata))
-
         if sigdata["algo"] in {"ssh-rsa", "rsa-sha2-256", "rsa-sha2-512"}:
             # compatible with OpenSSL; RSASSA-PKCS1-v1_5 is used
             print("Raw signature:", b64_encode(sigdata["s"]))
