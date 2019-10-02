@@ -196,9 +196,7 @@ class SSHSigWrap(Package):
         self.namespace = pkt.read_string()
         self.reserved = pkt.read_string()
         self.hash_algo = pkt.read_string()
-        # XXX: ssh-keygen appends hash directly instead of encapsulating
-        # it into a string. Should be read_string() according to spec.
-        self.hash = pkt.read()
+        self.hash = pkt.read_string()
         return self
 
     def to_bytes(self):
@@ -207,7 +205,7 @@ class SSHSigWrap(Package):
         pkt.write_string(self.namespace)
         pkt.write_string(self.reserved)
         pkt.write_string(self.hash_algo)
-        pkt.write(self.hash)
+        pkt.write_string(self.hash)
         return pkt.output_fh.getvalue()
 
 class SSHSig(Package):
