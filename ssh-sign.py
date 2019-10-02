@@ -405,7 +405,7 @@ elif cmd == "verify":
     sshsigdata = ssh_parse_sshsig(sshsigbuf)
     Core.trace("parsed sshsig wrapper: %r", sshsigdata)
 
-    keyblob = sshsigdata["publickey"]
+    keyblob = sshsigdata["public_key"]
     sigblob = sshsigdata["signature"]
 
     keydata = ssh_parse_publickey(keyblob)
