@@ -1,5 +1,11 @@
+import binascii
 import enum
+import hashlib
+import os
 import socket
+
+from lib.binary_io import SshStream
+from lib.ssh_public_key import ssh_parse_publickey
 
 class SshAgentCommand(enum.IntEnum):
     REQUEST_IDENTITIES      = 11
