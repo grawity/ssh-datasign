@@ -3,7 +3,6 @@
 # (c) 2018 Mantas Mikulėnas <grawity@gmail.com>
 # Released under the MIT License (https://spdx.org/licenses/MIT)
 import argparse
-import binascii
 import enum
 import hashlib
 import io
@@ -12,20 +11,13 @@ import os
 from pprint import pprint
 import sys
 
-from lib.binary_io import *
 from lib.constants import *
 from lib.exceptions import *
 from lib.raw_crypto import cry_verify_signature
 from lib.ssh_agent import *
 from lib.ssh_public_key import *
-
-def b64_encode(buf):
-    return binascii.b2a_base64(buf, newline=False).decode()
-
-def chunk(vec, size):
-    for i in range(0, len(vec), size):
-        yield vec[i:i+size]
-
+from lib.sshsig import *
+from lib.util import *
 
 # Signature formats:
 # https://tools.ietf.org/html/rfc4253#section-6.6
@@ -33,134 +25,13 @@ def chunk(vec, size):
 # https://tools.ietf.org/html/draft-irtf-cfrg-eddsa-05
 # https://tools.ietf.org/html/draft-ietf-curdle-ssh-ed25519-00
 
-class Package():
-    pass
-
-class SSHSigWrap(Package):
-    def __init__(self, *, namespace=b"",
-                          reserved=b"",
-                          hash_algo=None,
-                          hash=None):
-        self.namespace = namespace
-        self.reserved = reserved
-        self.hash_algo = hash_algo
-        self.hash = hash
-
-    @classmethod
-    def from_bytes(klass, buf):
-        self = klass()
-        pkt = SshReader.from_bytes(buf)
-        magic = pkt.read(6)
-        if magic != b"SSHSIG":
-            raise ValueError("magic preamble not found")
-        self.namespace = pkt.read_string()
-        self.reserved = pkt.read_string()
-        self.hash_algo = pkt.read_string()
-        self.hash = pkt.read_string()
-        return self
-
-    def to_bytes(self):
-        pkt = SshWriter(io.BytesIO())
-        pkt.write(b"SSHSIG")
-        pkt.write_string(self.namespace)
-        pkt.write_string(self.reserved)
-        pkt.write_string(self.hash_algo)
-        pkt.write_string(self.hash)
-        return pkt.output_fh.getvalue()
-
-class SSHSig(Package):
-    def __init__(self, *, version=0x01,
-                          public_key=None,
-                          namespace=b"",
-                          reserved=b"",
-                          hash_algo=None,
-                          signature=None):
-        self.version = version
-        self.public_key = public_key
-        self.namespace = namespace
-        self.reserved = reserved
-        self.hash_algo = hash_algo
-        self.signature = signature
-
-    @classmethod
-    def from_bytes(klass, buf):
-        self = klass()
-        pkt = SshReader.from_bytes(buf)
-        magic = pkt.read(6)
-        if magic != b"SSHSIG":
-            raise ValueError("magic preamble not found")
-        self.version = pkt.read_uint32()
-        if self.version == 0x01:
-            self.public_key = pkt.read_string()
-            self.namespace = pkt.read_string()
-            self.reserved = pkt.read_string()
-            self.hash_algo = pkt.read_string()
-            self.signature = pkt.read_string()
-        else:
-            raise UnsupportedVersion(version)
-        return self
-
-    def to_bytes(self):
-        pkt = SshWriter(io.BytesIO())
-        pkt.write(b"SSHSIG")
-        pkt.write_uint32(self.version)
-        if self.version == 0x01:
-            pkt.write_string(self.public_key)
-            pkt.write_string(self.namespace)
-            pkt.write_string(self.reserved)
-            pkt.write_string(self.hash_algo)
-            pkt.write_string(self.signature)
-        else:
-            raise UnsupportedVersion(version)
-        return pkt.output_fh.getvalue()
-
-    def to_armored(self):
-        return ssh_enarmor_sshsig(self.to_bytes())
-
 def ssh_parse_sshsigdata(buf):
-    obj = SSHSigWrap.from_bytes(buf)
+    obj = SshsigWrapper.from_bytes(buf)
     return obj.__dict__
-
-def ssh_format_sshsigdata(namespace, hash_algo, hash):
-    obj = SSHSigWrap(namespace=namespace,
-                     reserved=b"",
-                     hash_algo=hash_algo.encode(),
-                     hash=hash)
-    return obj.to_bytes()
 
 def ssh_parse_sshsig(buf):
-    obj = SSHSig.from_bytes(buf)
+    obj = SshsigSignature.from_bytes(buf)
     return obj.__dict__
-
-def ssh_format_sshsig(pubkey, namespace, hash_algo, signature):
-    obj = SSHSig(public_key=pubkey,
-                 namespace=namespace,
-                 reserved=b"",
-                 hash_algo=hash_algo.encode(),
-                 signature=signature)
-    return obj.to_bytes()
-
-def ssh_enarmor_sshsig(buf):
-    buf = b64_encode(buf)
-    buf = "\n".join([
-            "-----BEGIN SSH SIGNATURE-----",
-            *chunk(buf, 76),
-            "-----END SSH SIGNATURE-----",
-          ])
-    return buf + "\n"
-
-def ssh_dearmor_sshsig(buf):
-    acc = ""
-    match = False
-    # TODO: stricter format check
-    for line in buf.splitlines():
-        if line == "-----BEGIN SSH SIGNATURE-----":
-            match = True
-        elif line == "-----END SSH SIGNATURE-----":
-            break
-        elif line and match:
-            acc += line
-    return binascii.a2b_base64(acc)
 
 def hash_data(hash_algo, data):
     if hash_algo in {"sha1", "sha256", "sha512"}:
@@ -200,10 +71,9 @@ if cmd == "sign":
     # Format the inner packet that will be signed.
 
     hash_algo = "sha512"
-    data_wrapper = SSHSigWrap(namespace=namespace.encode(),
-                              hash_algo=hash_algo.encode(),
-                              hash=hash_data(hash_algo, data))
-    data = data_wrapper.to_bytes()
+    data = SshsigWrapper(namespace=namespace.encode(),
+                         hash_algo=hash_algo.encode(),
+                         hash=hash_data(hash_algo, data)).to_bytes()
 
     # Sign the packet.
 
@@ -226,10 +96,10 @@ if cmd == "sign":
     hash_algo = sigalgo_to_digest[sigdata["algo"]]
     Core.info("Signed using %s (%s)", hash_algo, sigdata["algo"])
 
-    sshsig = SSHSig(public_key=agentkey.keyblob,
-                    namespace=namespace.encode(),
-                    hash_algo=hash_algo.encode(),
-                    signature=sigblob)
+    sshsig = SshsigSignature(public_key=agentkey.keyblob,
+                             namespace=namespace.encode(),
+                             hash_algo=hash_algo.encode(),
+                             signature=sigblob)
     print(sshsig.to_armored().strip())
 
     if args.test_verify:
@@ -302,13 +172,11 @@ elif cmd == "verify":
     if True:
         # Format the inner packet that will be signed.
         hash_algo = sshsigdata["hash_algo"].decode()
-        sshsigblob = ssh_format_sshsigdata(namespace,
-                                           hash_algo,
-                                           hash_data(hash_algo, data))
-
-        Core.trace("formatted inner packet: %r", sshsigblob)
-        Core.trace("=> %r", ssh_parse_sshsigdata(sshsigblob))
-        data = sshsigblob
+        data = SshsigWrapper(namespace=namespace.encode(),
+                             hash_algo=hash_algo.encode(),
+                             hash=hash_data(hash_algo, data)).to_bytes()
+        Core.trace("formatted inner packet: %r", data)
+        Core.trace("=> %r", ssh_parse_sshsigdata(data))
 
     print("verify:", cry_verify_signature(data, keydata, sigdata))
 
