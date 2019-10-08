@@ -168,7 +168,12 @@ def hash_data(hash_algo, data):
     else:
         raise UnsupportedHashType(hash_algo)
 
-cmd, *rest = sys.argv[1:]
+rest = sys.argv[1:]
+
+if rest:
+    cmd, *rest = rest
+else:
+    Core.die("missing command (try 'sign' or 'verify')")
 
 if cmd == "sign":
     _ap = argparse.ArgumentParser()
@@ -219,7 +224,7 @@ if cmd == "sign":
     Core.trace("parsed signature blob: %r", sigdata)
 
     hash_algo = sigalgo_to_digest[sigdata["algo"]]
-    Core.info("Signed using %s" % sigdata)
+    Core.info("Signed using %s (%s)", hash_algo, sigdata["algo"])
 
     sshsig = SSHSig(public_key=agentkey.keyblob,
                     namespace=namespace.encode(),
@@ -308,6 +313,4 @@ elif cmd == "verify":
     print("verify:", cry_verify_signature(data, keydata, sigdata))
 
 else:
-    buf = open("/tmp/pkt", "rb").read()
-    sbuf = ssh_parse_sshsigdata(buf)
-    pprint(sbuf)
+    Core.die("unknown command %r", cmd)
