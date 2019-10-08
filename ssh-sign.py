@@ -25,14 +25,6 @@ from lib.util import *
 # https://tools.ietf.org/html/draft-irtf-cfrg-eddsa-05
 # https://tools.ietf.org/html/draft-ietf-curdle-ssh-ed25519-00
 
-def ssh_parse_sshsigdata(buf):
-    obj = SshsigWrapper.from_bytes(buf)
-    return obj.__dict__
-
-def ssh_parse_sshsig(buf):
-    obj = SshsigSignature.from_bytes(buf)
-    return obj.__dict__
-
 def hash_data(hash_algo, data):
     if hash_algo in {"sha1", "sha256", "sha512"}:
         return hashlib.new(hash_algo, data).digest()
@@ -134,14 +126,12 @@ elif cmd == "verify":
     else:
         sshsigbuf = sys.stdin.read()
 
-    namespace = (args.namespace or "").encode()
+    namespace = args.namespace or ""
 
-    sshsigbuf = ssh_dearmor_sshsig(sshsigbuf)
-    sshsigdata = ssh_parse_sshsig(sshsigbuf)
-    Core.trace("parsed sshsig wrapper: %r", sshsigdata)
+    sshsig_outer = SshsigSignature.from_armored(sshsigbuf)
 
-    keyblob = sshsigdata["public_key"]
-    sigblob = sshsigdata["signature"]
+    keyblob = sshsig_outer.public_key
+    sigblob = sshsig_outer.signature
 
     keydata = ssh_parse_publickey(keyblob)
     sigdata = ssh_parse_signature(sigblob)
@@ -163,7 +153,7 @@ elif cmd == "verify":
         else:
             Core.die("enveloped publickey fingerprint does not match provided")
     if args.namespace:
-        if args.namespace.encode() != sshsigdata["namespace"]:
+        if args.namespace.encode() != sshsig_outer.namespace:
             Core.die("enveloped namespace does not match provided")
 
     Core.trace("parsed publickey blob: %r", keydata)
@@ -171,12 +161,12 @@ elif cmd == "verify":
 
     if True:
         # Format the inner packet that will be signed.
-        hash_algo = sshsigdata["hash_algo"].decode()
+        hash_algo = sshsig_outer.hash_algo.decode()
         data = SshsigWrapper(namespace=namespace.encode(),
                              hash_algo=hash_algo.encode(),
                              hash=hash_data(hash_algo, data)).to_bytes()
         Core.trace("formatted inner packet: %r", data)
-        Core.trace("=> %r", ssh_parse_sshsigdata(data))
+        Core.trace("=> %r", SshsigWrapper.from_bytes(data).__dict__)
 
     print("verify:", cry_verify_signature(data, keydata, sigdata))
 
