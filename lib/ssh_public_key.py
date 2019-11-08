@@ -24,6 +24,11 @@ def ssh_parse_publickey(buf, algoonly=False):
         # https://tools.ietf.org/html/rfc5656#section-3.1
         data["curve"] = pkt.read_string()
         data["Q"] = pkt.read_string()
+    elif algo == "sk-ecdsa-sha2-nistp256@openssh.com":
+        # PROTOCOL.u2f
+        data["curve"] = b"nistp256"
+        data["Q"] = pkt.read_string()
+        data["appid"] = pkt.read_string()
     else:
         raise UnsupportedKeyType(algo)
     return data
@@ -50,6 +55,15 @@ def ssh_parse_signature(buf, algoonly=False):
         sigpkt = pkt.read_string_pkt()
         data["r"] = sigpkt.read_mpint()
         data["s"] = sigpkt.read_mpint()
+    elif algo == "sk-ecdsa-sha2-nistp256@openssh.com":
+        # PROTOCOL.u2f
+        # TODO: The signature is made over a special packet, not raw data
+        # TODO: Does this also use a subpacket?
+        #sigpkt = pkt.read_string_pkt()
+        data["r"] = pkt.read_mpint()
+        data["s"] = pkt.read_mpint()
+        data["flags"] = pkt.read_byte()
+        data["counter"] = pkt.read_uint32()
     else:
         raise UnsupportedSignatureType(algo)
     return data
