@@ -26,7 +26,7 @@ def ssh_parse_publickey(buf, algoonly=False):
         data["Q"] = pkt.read_string()
     elif algo == "sk-ecdsa-sha2-nistp256@openssh.com":
         # PROTOCOL.u2f
-        data["curve"] = b"nistp256"
+        data["curve"] = pkt.read_string()
         data["Q"] = pkt.read_string()
         data["appid"] = pkt.read_string()
     else:
