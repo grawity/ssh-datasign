@@ -20,6 +20,9 @@ def ssh_parse_publickey(buf, algoonly=False):
     elif algo in {"ssh-ed25519", "ssh-ed448"}:
         # https://tools.ietf.org/html/draft-ietf-curdle-ssh-ed25519-ed448-00#section-4
         data["key"] = pkt.read_string()
+    elif algo == "sk-ssh-ed25519@openssh.com":
+        data["key"] = pkt.read_string()
+        data["appid"] = pkt.read_string()
     elif algo.startswith("ecdsa-sha2-"):
         # https://tools.ietf.org/html/rfc5656#section-3.1
         data["curve"] = pkt.read_string()
@@ -49,6 +52,12 @@ def ssh_parse_signature(buf, algoonly=False):
     elif algo in {"ssh-ed25519", "ssh-ed448"}:
         # https://tools.ietf.org/html/draft-ietf-curdle-ssh-ed25519-ed448-00#section-4
         data["sig"] = pkt.read_string()
+    elif algo == "sk-ssh-ed25519@openssh.com":
+        # PROTOCOL.u2f
+        # TODO: The signature is made over a special packet, not raw data
+        data["r"] = pkt.read_string()
+        data["flags"] = pkt.read_byte()
+        data["counter"] = pkt.read_uint32()
     elif algo.startswith("ecdsa-sha2-"):
         # https://tools.ietf.org/html/rfc5656#section-3.1.2
         #data["sig"] = pkt.read_string()
