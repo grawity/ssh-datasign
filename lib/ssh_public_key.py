@@ -60,19 +60,17 @@ def ssh_parse_signature(buf, algoonly=False):
         data["counter"] = pkt.read_uint32()
     elif algo.startswith("ecdsa-sha2-"):
         # https://tools.ietf.org/html/rfc5656#section-3.1.2
-        #data["sig"] = pkt.read_string()
         sigpkt = pkt.read_string_pkt()
         data["r"] = sigpkt.read_mpint()
         data["s"] = sigpkt.read_mpint()
     elif algo == "sk-ecdsa-sha2-nistp256@openssh.com":
         # PROTOCOL.u2f
         # TODO: The signature is made over a special packet, not raw data
-        # TODO: Does this also use a subpacket?
-        #sigpkt = pkt.read_string_pkt()
-        data["r"] = pkt.read_mpint()
-        data["s"] = pkt.read_mpint()
-        data["flags"] = pkt.read_byte()
-        data["counter"] = pkt.read_uint32()
+        sigpkt = pkt.read_string_pkt()
+        data["r"] = sigpkt.read_mpint()
+        data["s"] = sigpkt.read_mpint()
+        data["flags"] = sigpkt.read_byte()
+        data["counter"] = sigpkt.read_uint32()
     else:
         raise UnsupportedSignatureType(algo)
     return data
